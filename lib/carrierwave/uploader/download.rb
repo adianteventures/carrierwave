@@ -37,8 +37,30 @@ module CarrierWave
 
         def file
           if @file.blank?
-            @file = Kernel.open(@uri.to_s)
-            @file = @file.is_a?(String) ? StringIO.new(@file) : @file
+            
+            # make several attempts to download the file and also set a timeout per attempt
+            total_attempts = 5
+            timeout_s = 30
+            
+            total_attempts.times do |attempt|
+              begin
+                Timeout::timeout(timeout_s) do
+                  @file = Kernel.open(@uri.to_s)
+                  @file = @file.is_a?(String) ? StringIO.new(@file) : @file
+                end
+                
+                # if we reach this point, download was successfull: break the attempt-loop
+                break
+                
+              rescue Exception => e
+                puts "CarrierWave::Uploader::Download - RETRY! attempt=#{attempt}. ERROR: #{e.message}"
+                if (attempt >= (total_attempts-1))
+                  # if last retry also failed, raise exception
+                  raise e
+                end
+              end
+            end
+            
           end
           @file
 
