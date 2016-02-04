@@ -56,7 +56,29 @@ module CarrierWave
         cache!(new_file) if new_file && ((@cache_id != parent_cache_id) || @cache_id.nil?)
         if @file and @cache_id
           with_callbacks(:store, new_file) do
-            new_file = storage.store!(@file)
+            
+            # make several attempts to store the file and also set a timeout per attempt
+            total_attempts = 5
+            timeout_s = 30
+            
+            total_attempts.times do |attempt|
+              begin
+                Timeout::timeout(timeout_s) do
+                  new_file = storage.store!(@file)
+                end
+                
+                # if we reach this point, store was successfull: break the attempt-loop
+                break
+                
+              rescue Exception => e
+                puts "CarrierWave::Uploader::Store - RETRY! attempt=#{attempt}. ERROR: #{e.message}"
+                if (attempt >= (total_attempts-1))
+                  # if last retry also failed, raise exception
+                  raise e
+                end
+              end
+            end
+            
             @file.delete if (delete_tmp_file_after_storage && ! move_to_store)
             delete_cache_id
             @file = new_file
