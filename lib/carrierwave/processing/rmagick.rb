@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module CarrierWave
 
   ##
@@ -62,6 +60,8 @@ module CarrierWave
 
     included do
       begin
+        require "rmagick"
+      rescue LoadError
         require "RMagick"
       rescue LoadError => e
         e.message << " (You may need to install the rmagick gem)"
@@ -133,6 +133,8 @@ module CarrierWave
     # [Magick::Image] additional manipulations to perform
     #
     def resize_to_limit(width, height)
+      width = dimension_from width
+      height = dimension_from height
       manipulate! do |img|
         geometry = Magick::Geometry.new(width, height, 0, 0, Magick::GreaterGeometry)
         new_img = img.change_geometry(geometry) do |new_width, new_height|
@@ -162,6 +164,8 @@ module CarrierWave
     # [Magick::Image] additional manipulations to perform
     #
     def resize_to_fit(width, height)
+      width = dimension_from width
+      height = dimension_from height
       manipulate! do |img|
         img.resize_to_fit!(width, height)
         img = yield(img) if block_given?
@@ -186,6 +190,8 @@ module CarrierWave
     # [Magick::Image] additional manipulations to perform
     #
     def resize_to_fill(width, height, gravity=::Magick::CenterGravity)
+      width = dimension_from width
+      height = dimension_from height
       manipulate! do |img|
         img.crop_resized!(width, height, gravity)
         img = yield(img) if block_given?
@@ -211,6 +217,8 @@ module CarrierWave
     # [Magick::Image] additional manipulations to perform
     #
     def resize_and_pad(width, height, background=:transparent, gravity=::Magick::CenterGravity)
+      width = dimension_from width
+      height = dimension_from height
       manipulate! do |img|
         img.resize_to_fit!(width, height)
         new_img = ::Magick::Image.new(width, height) { self.background_color = background == :transparent ? 'rgba(255,255,255,0)' : background.to_s }
@@ -247,6 +255,28 @@ module CarrierWave
         new_img = yield(new_img) if block_given?
         new_img
       end
+    end
+
+    ##
+    # Returns the width of the image.
+    #
+    # === Returns
+    #
+    # [Integer] the image's width in pixels
+    #
+    def width
+      rmagick_image.columns
+    end
+
+    ##
+    # Returns the height of the image.
+    #
+    # === Returns
+    #
+    # [Integer] the image's height in pixels
+    #
+    def height
+      rmagick_image.rows
     end
 
     ##
@@ -322,14 +352,18 @@ module CarrierWave
       frames.append(true) if block_given?
 
       write_block = create_info_block(options[:write])
+
       if options[:format] || @format
         frames.write("#{options[:format] || @format}:#{current_path}", &write_block)
+        move_to = current_path.chomp(File.extname(current_path)) + ".#{options[:format] || @format}"
+        file.move_to(move_to, permissions, directory_permissions)
       else
         frames.write(current_path, &write_block)
       end
+
       destroy_image(frames)
     rescue ::Magick::ImageMagickError => e
-      raise CarrierWave::ProcessingError, I18n.translate(:"errors.messages.rmagick_processing_error", :e => e, :default => I18n.translate(:"errors.messages.rmagick_processing_error", :e => e, :locale => :en))
+      raise CarrierWave::ProcessingError, I18n.translate(:"errors.messages.rmagick_processing_error", :e => e)
     end
 
   private
@@ -342,7 +376,16 @@ module CarrierWave
     end
 
     def destroy_image(image)
-      image.destroy! if image.respond_to?(:destroy!)
+      image.try(:destroy!)
+    end
+
+    def dimension_from(value)
+      return value unless value.instance_of?(Proc)
+      value.arity >= 1 ? value.call(self) : value.call
+    end
+
+    def rmagick_image
+      ::Magick::Image.from_blob(self.read).first
     end
 
   end # RMagick

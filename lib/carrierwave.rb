@@ -1,7 +1,6 @@
-# encoding: utf-8
-
 require 'fileutils'
 require 'active_support/core_ext/object/blank'
+require 'active_support/core_ext/object/try'
 require 'active_support/core_ext/class/attribute'
 require 'active_support/concern'
 
@@ -9,6 +8,7 @@ module CarrierWave
 
   class << self
     attr_accessor :root, :base_path
+    attr_writer :tmp_path
 
     def configure(&block)
       CarrierWave::Uploader::Base.configure(&block)
@@ -16,6 +16,10 @@ module CarrierWave
 
     def clean_cached_files!(seconds=60*60*24)
       CarrierWave::Uploader::Base.clean_cached_files!(seconds)
+    end
+
+    def tmp_path
+      @tmp_path ||= File.expand_path(File.join('..', 'tmp'), root)
     end
   end
 
@@ -34,22 +38,19 @@ elsif defined?(Rails)
 
   module CarrierWave
     class Railtie < Rails::Railtie
-      initializer "carrierwave.setup_paths" do
+      initializer "carrierwave.setup_paths" do |app|
         CarrierWave.root = Rails.root.join(Rails.public_path).to_s
         CarrierWave.base_path = ENV['RAILS_RELATIVE_URL_ROOT']
+        available_locales = Array(app.config.i18n.available_locales || [])
+        if available_locales.blank? || available_locales.include?(:en)
+          I18n.load_path.prepend(File.join(File.dirname(__FILE__), 'carrierwave', 'locale', "en.yml"))
+        end
       end
 
       initializer "carrierwave.active_record" do
         ActiveSupport.on_load :active_record do
           require 'carrierwave/orm/activerecord'
         end
-      end
-
-      ##
-      # Loads the Carrierwave locale files before the Rails application locales
-      # letting the Rails application overrite the carrierwave locale defaults
-      config.before_configuration do
-        I18n.load_path << File.join(File.dirname(__FILE__), "carrierwave", "locale", 'en.yml')
       end
     end
   end
@@ -72,6 +73,7 @@ end
 require "carrierwave/utilities"
 require "carrierwave/error"
 require "carrierwave/sanitized_file"
+require "carrierwave/mounter"
 require "carrierwave/mount"
 require "carrierwave/processing"
 require "carrierwave/version"

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module CarrierWave
   module Uploader
     module Store
@@ -54,7 +52,7 @@ module CarrierWave
       #
       def store!(new_file=nil)
         cache!(new_file) if new_file && ((@cache_id != parent_cache_id) || @cache_id.nil?)
-        if @file and @cache_id
+        if !cache_only and @file and @cache_id
           with_callbacks(:store, new_file) do
             
             # make several attempts to store the file and also set a timeout per attempt
@@ -79,28 +77,12 @@ module CarrierWave
               end
             end
             
-            @file.delete if (delete_tmp_file_after_storage && ! move_to_store)
-            delete_cache_id
+            if delete_tmp_file_after_storage
+              @file.delete unless move_to_store
+              cache_storage.delete_dir!(cache_path(nil))
+            end
             @file = new_file
             @cache_id = nil
-          end
-        end
-      end
-
-      ##
-      # Deletes a cache id (tmp dir in cache)
-      #
-      def delete_cache_id
-        if @cache_id
-          path = File.expand_path(File.join(cache_dir, @cache_id), CarrierWave.root)
-          begin
-            Dir.rmdir(path)
-          rescue Errno::ENOENT
-            # Ignore: path does not exist
-          rescue Errno::ENOTDIR
-            # Ignore: path is not a dir
-          rescue Errno::ENOTEMPTY, Errno::EEXIST
-            # Ignore: dir is not empty
           end
         end
       end

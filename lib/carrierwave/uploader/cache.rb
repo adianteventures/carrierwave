@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module CarrierWave
 
   class FormNotMultipart < UploadError
@@ -8,15 +6,27 @@ module CarrierWave
     end
   end
 
+  class CacheCounter
+    @@counter = 0
+
+    def self.increment
+      @@counter += 1
+    end
+  end
+
   ##
   # Generates a unique cache id for use in the caching system
   #
   # === Returns
   #
-  # [String] a cache id in the format TIMEINT-PID-RND
+  # [String] a cache id in the format TIMEINT-PID-COUNTER-RND
   #
   def self.generate_cache_id
-    Time.now.utc.to_i.to_s + '-' + Process.pid.to_s + '-' + ("%04d" % rand(9999))
+    [Time.now.utc.to_i,
+      Process.pid,
+      '%04d' % (CarrierWave::CacheCounter.increment % 1000),
+      '%04d' % rand(9999)
+    ].map(&:to_s).join('-')
   end
 
   module Uploader
@@ -42,13 +52,7 @@ module CarrierWave
         # It's recommended that you keep cache files in one place only.
         #
         def clean_cached_files!(seconds=60*60*24)
-          Dir.glob(File.expand_path(File.join(cache_dir, '*'), CarrierWave.root)).each do |dir|
-            time = dir.scan(/(\d+)-\d+-\d+/).first.map { |t| t.to_i }
-            time = Time.at(*time)
-            if time < (Time.now.utc - seconds)
-              FileUtils.rm_rf(dir)
-            end
-          end
+          cache_storage.new(CarrierWave::Uploader::Base.new).clean_cache!(seconds)
         end
       end
 
@@ -77,10 +81,8 @@ module CarrierWave
         _content = file.read
         if _content.is_a?(File) # could be if storage is Fog
           sanitized = CarrierWave::Storage::Fog.new(self).retrieve!(File.basename(_content.path))
-          sanitized.read if sanitized.exists?
-
         else
-          sanitized = SanitizedFile.new :tempfile => StringIO.new(file.read),
+          sanitized = SanitizedFile.new :tempfile => StringIO.new(_content),
             :filename => File.basename(path), :content_type => file.content_type
         end
         sanitized
@@ -91,7 +93,7 @@ module CarrierWave
       #
       # === Returns
       #
-      # [String] a cache name, in the format YYYYMMDD-HHMM-PID-RND/filename.txt
+      # [String] a cache name, in the format TIMEINT-PID-COUNTER-RND/filename.txt
       #
       def cache_name
         File.join(cache_id, full_original_filename) if cache_id and original_filename
@@ -115,22 +117,28 @@ module CarrierWave
       #
       def cache!(new_file = sanitized_file)
         new_file = CarrierWave::SanitizedFile.new(new_file)
+        return if new_file.empty?
 
-        unless new_file.empty?
-          raise CarrierWave::FormNotMultipart if new_file.is_path? && ensure_multipart_form
+        raise CarrierWave::FormNotMultipart if new_file.is_path? && ensure_multipart_form
 
-          with_callbacks(:cache, new_file) do
-            self.cache_id = CarrierWave.generate_cache_id unless cache_id
+        self.cache_id = CarrierWave.generate_cache_id unless cache_id
 
-            @filename = new_file.filename
-            self.original_filename = new_file.filename
+        @filename = new_file.filename
+        self.original_filename = new_file.filename
 
-            if move_to_cache
-              @file = new_file.move_to(cache_path, permissions, directory_permissions)
-            else
-              @file = new_file.copy_to(cache_path, permissions, directory_permissions)
-            end
+        begin
+          # first, create a workfile on which we perform processings
+          if move_to_cache
+            @file = new_file.move_to(File.expand_path(workfile_path, root), permissions, directory_permissions)
+          else
+            @file = new_file.copy_to(File.expand_path(workfile_path, root), permissions, directory_permissions)
           end
+
+          with_callbacks(:cache, @file) do
+            @file = cache_storage.cache!(@file)
+          end
+        ensure
+          FileUtils.rm_rf(workfile_path(''))
         end
       end
 
@@ -149,14 +157,29 @@ module CarrierWave
         with_callbacks(:retrieve_from_cache, cache_name) do
           self.cache_id, self.original_filename = cache_name.to_s.split('/', 2)
           @filename = original_filename
-          @file = CarrierWave::SanitizedFile.new(cache_path)
+          @file = cache_storage.retrieve_from_cache!(full_filename(original_filename))
         end
+      end
+
+      ##
+      # Calculates the path where the cache file should be stored.
+      #
+      # === Parameters
+      #
+      # [for_file (String)] name of the file <optional>
+      #
+      # === Returns
+      #
+      # [String] the cache path
+      #
+      def cache_path(for_file=full_filename(original_filename))
+        File.join(*[cache_dir, @cache_id, for_file].compact)
       end
 
     private
 
-      def cache_path
-        File.expand_path(File.join(cache_dir, cache_name), root)
+      def workfile_path(for_file=original_filename)
+        File.join(CarrierWave.tmp_path, @cache_id, version_name.to_s, for_file)
       end
 
       attr_reader :cache_id, :original_filename
@@ -165,7 +188,9 @@ module CarrierWave
       alias_method :full_original_filename, :original_filename
 
       def cache_id=(cache_id)
-        raise CarrierWave::InvalidParameter, "invalid cache id" unless cache_id =~ /\A[\d]+\-[\d]+\-[\d]{4}\z/
+        # Earlier version used 3 part cache_id. Thus we should allow for
+        # the cache_id to have both 3 part and 4 part formats.
+        raise CarrierWave::InvalidParameter, "invalid cache id" unless cache_id =~ /\A(-)?[\d]+\-[\d]+(\-[\d]{4})?\-[\d]{4}\z/
         @cache_id = cache_id
       end
 
@@ -174,6 +199,9 @@ module CarrierWave
         @original_filename = filename
       end
 
+      def cache_storage
+        @cache_storage ||= self.class.cache_storage.new(self)
+      end
     end # Cache
   end # Uploader
 end # CarrierWave
